@@ -56,7 +56,7 @@ public class Train_model {
         // 將分詞結果以空格連接成字串
         String tokenized = String.join(" ", tokens);
 
-        // 3. 過濾停用詞及不合法字元（如 %, $, #, +, /, & 等）
+        // 3. 過濾停用詞及特殊字元（如 %, $, #, +, /, & 等）
         StringTokenizer tokenizer = new StringTokenizer(tokenized);
         StringBuilder filtered = new StringBuilder();
         while (tokenizer.hasMoreTokens()) {
@@ -146,20 +146,24 @@ public class Train_model {
         for (int i = 0; i < data.numClasses(); i++) {
             classValues.add(data.classAttribute().value(i));
         }
+        // 創建 Weka 的特徵屬性 (文本 + 類別標籤)
         ArrayList<Attribute> attributes = new ArrayList<>();
         attributes.add(new Attribute("text", (List<String>) null));
         attributes.add(new Attribute("class", classValues));
         Instances processedData = new Instances("ProcessedData", attributes, data.numInstances());
         processedData.setClassIndex(processedData.numAttributes() - 1);
 
+        // 創建多執行緒池，CPU核心數作為執行緒數量
         ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
         List<Future<String>> futures = new ArrayList<>();
 
+        // 提交文本預處理任務到執行緒池
         for (int i = 0; i < data.numInstances(); i++) {
             String originalText = data.instance(i).stringValue(0);
             futures.add(executor.submit(() -> preprocessTextCommon(originalText)));
         }
 
+        // 取得處理結果並填入 Weka Instances
         for (int i = 0; i < futures.size(); i++) {
             String processedText;
             try {
@@ -176,6 +180,7 @@ public class Train_model {
             values[1] = data.instance(i).classValue();
             processedData.add(new DenseInstance(1.0, values));
         }
+        // 關閉執行緒池
         executor.shutdown();
         return processedData;
     }
@@ -187,19 +192,28 @@ public class Train_model {
         int vectorSize = fastText.getVector("示例文本").size();
         System.out.println("vectorSize: " + vectorSize);
         ArrayList<Attribute> attributes = new ArrayList<>();
+        //創建 300 維的數值型特徵屬性
         for (int i = 0; i < vectorSize; i++) {
             attributes.add(new Attribute("vec_" + i));
         }
+        //最後一個屬性設置為 "class"
         attributes.add(data.classAttribute());
+        // 創建 Weka 的 Instances 結構
         Instances vectorizedData = new Instances("VectorizedData", attributes, data.numInstances());
-        vectorizedData.setClassIndex(vectorizedData.numAttributes() - 1);
+        vectorizedData.setClassIndex(vectorizedData.numAttributes() - 1);// 設置類別屬性索引
+        
+         // 緩存詞向量，提升運算效率
         ConcurrentHashMap<String, double[]> vectorCache = new ConcurrentHashMap<>();
 
+        // 逐條文本處理與向量化
         for (int i = 0; i < data.numInstances(); i++) {
-            String text = data.instance(i).stringValue(0);
+            String text = data.instance(i).stringValue(0);// 取得文本內容
+            // 計算平均詞向量
             double[] vector = computeAverageVector(text, fastText, vectorSize, vectorCache);
+            // 將詞向量與類別標籤組合為數值陣列
             double[] instanceValues = Arrays.copyOf(vector, vector.length + 1);
-            instanceValues[vector.length] = data.instance(i).classValue();
+            instanceValues[vector.length] = data.instance(i).classValue();// 設置類別值
+            // 新增數據至 Instances 中
             vectorizedData.add(new DenseInstance(1.0, instanceValues));
         }
         return vectorizedData;
@@ -265,7 +279,7 @@ public class Train_model {
 
     // ============ 主程式 ============
     public static void main(String[] args) {
-        String inputCsvPath = "src/main/resources/inputdata_v.csv";
+        String inputCsvPath = "src/main/resources/inputdata.csv";
         String unifiedModelPath = "src/main/resources/model.model";
         String processedCsvPath = "src/main/resources/processed_data.csv";
         String outputTxtPath = "src/main/resources/data_exploration_results.txt";
@@ -304,9 +318,9 @@ public class Train_model {
 
             // 利用 MultiFilter 組合 Resample 與 ClassBalancer 過濾器
             Resample resample = new Resample();
-            resample.setNoReplacement(false);
-            resample.setBiasToUniformClass(0.5);
-            resample.setSampleSizePercent(120);
+            resample.setNoReplacement(false); // 有放回抽樣
+            resample.setBiasToUniformClass(0.5);// 平衡類別分布
+            resample.setSampleSizePercent(150);// 重抽樣比例
 
             ClassBalancer classBalancer = new ClassBalancer();
 
@@ -327,7 +341,7 @@ public class Train_model {
             // 利用交叉驗證評估模型，確保每個 fold 中僅在訓練階段應用過濾器
             Evaluation eval = new Evaluation(vectorizedData);
             int numFolds = 10;
-            eval.crossValidateModel(filteredClassifier, vectorizedData, numFolds, new Random(9));
+            eval.crossValidateModel(filteredClassifier, vectorizedData, numFolds, new Random(11));
 
             System.out.println("=== Summary ===");
             System.out.println(eval.toSummaryString());
