@@ -2,14 +2,14 @@ package com.mycompany.train_model;
 
 import java.io.*;
 import java.util.*;
-import com.mycompany.train_model.Train_model.PredictionAPI; 
+//選擇要用哪個版本
+import com.mycompany.train_model.Train_model_bert.PredictionAPI; 
 
 public class PredictionUnknown {
 
     public static void main(String[] args) {
         // 文件路徑
         String inputCsvPath = "src/main/resources/invoice_items.csv"; // 未標註數據文件
-        //String outputCsvPath = "src/main/resources/predicted_class.csv";
         String modelPath = "src/main/resources/model.model"; // 訓練好的模型文件
         String fastTextModelPath = "D:/NCU/weka/embedding/fasttext_model_300.bin";
 
@@ -25,7 +25,7 @@ public class PredictionUnknown {
                         continue; // 跳過空行
                     }
 
-                    String predictedClass = api.predictClass(line);
+                    String predictedClass = api.predict(line,1);
                     System.out.println("result: " + predictedClass);
                 }
             }
