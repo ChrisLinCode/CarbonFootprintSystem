@@ -3,7 +3,7 @@ package com.mycompany.train_model;
 import java.io.*;
 import java.util.*;
 //選擇要用哪個版本
-import com.mycompany.train_model.Train_model_bert.PredictionAPI; 
+import com.mycompany.train_model.Train_model.PredictionAPI; 
 
 public class PredictionUnknown {
 

@@ -1,3 +1,4 @@
+import os
 from flask import Flask, request, jsonify
 import unicodedata
 from ckip_transformers.nlp import CkipWordSegmenter
@@ -28,5 +29,4 @@ def segment():
     return jsonify({"segmented": result})
 
 if __name__ == '__main__':
-    # 以預設 5000 埠啟動服務
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5002)))

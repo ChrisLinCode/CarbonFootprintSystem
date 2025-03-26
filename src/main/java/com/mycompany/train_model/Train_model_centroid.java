@@ -1,7 +1,6 @@
 package com.mycompany.train_model;
 
 //記得先開啟flask
-
 import com.github.jfasttext.JFastText;
 import com.google.gson.Gson;
 import weka.core.*;
@@ -65,12 +64,6 @@ public class Train_model_centroid {
             // 7. 保存模型
             UnifiedModel.saveModel(finalModel, unifiedModelPath);
             System.out.println("Model saved to: " + unifiedModelPath);
-
-            // 8. 測試載入 & 預測
-            UnifiedModel loadedModel = UnifiedModel.loadModel(unifiedModelPath);
-            // quantity = 3 為例
-            String resultJson = loadedModel.predict("優衣庫 T恤", 3);
-            System.out.println("Sample => " + resultJson);
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -186,6 +179,7 @@ public class Train_model_centroid {
     // D. UnifiedModel：類別重心 + 相似度
     // ------------------------------------------
     public static class UnifiedModel implements Serializable {
+
         private static final long serialVersionUID = 1L;
 
         // 類別重心 (key=label, val=平均向量)
@@ -364,7 +358,15 @@ public class Train_model_centroid {
             StringBuilder sb = new StringBuilder();
             int numClasses = confusionMatrix.length;
 
-            // 計算整體
+            // 建立短標籤 (a, b, c, ...)
+            List<String> shortLabels = new ArrayList<>();
+            for (int i = 0; i < numClasses; i++) {
+                // 超過 26 個類別時可自行擴充
+                char labelChar = (char) ('a' + i);
+                shortLabels.add(String.valueOf(labelChar));
+            }
+
+            // 計算整體統計
             int total = 0, correct = 0;
             int[] tp_fp_sum = new int[numClasses];
             int[] tp_fn_sum = new int[numClasses];
@@ -382,6 +384,7 @@ public class Train_model_centroid {
             }
             double accuracy = 100.0 * correct / total;
 
+            // 印出總結
             sb.append("=== Cross Validation Result ===\n");
             sb.append("Total Instances: ").append(total).append("\n");
             sb.append(String.format("Overall Accuracy: %.2f%%\n\n", accuracy));
@@ -401,30 +404,25 @@ public class Train_model_centroid {
                 weightedPrecision += precision * weight;
                 weightedRecall += recall * weight;
                 weightedF1 += f1 * weight;
-
-                sb.append("Class: ").append(classAttr.value(c)).append("\n");
-                sb.append(String.format("  Precision: %.3f\n", precision));
-                sb.append(String.format("  Recall   : %.3f\n", recall));
-                sb.append(String.format("  F1-Score : %.3f\n", f1));
-                sb.append("  Support  : ").append(support).append("\n\n");
             }
 
             sb.append(String.format("Weighted Precision: %.3f\n", weightedPrecision));
             sb.append(String.format("Weighted Recall   : %.3f\n", weightedRecall));
             sb.append(String.format("Weighted F1-Score : %.3f\n\n", weightedF1));
 
-            // 顯示標題列，並對齊數值
+            // 顯示混淆矩陣
             sb.append("=== Confusion Matrix ===\n");
-            // 上方標題行
-            sb.append(String.format("%12s", "")); 
+            // 先印出空白 + 上方標題行 (a, b, c, ...)
+            sb.append(String.format("%10s", ""));  // 預留空間
             for (int c = 0; c < numClasses; c++) {
-                sb.append(String.format("%5s", classAttr.value(c)));
+                sb.append(String.format("%5s", shortLabels.get(c)));
             }
             sb.append("   <-- classified as\n");
 
-            // 每一行先印 row label，再印 matrix 數值
+            // 每一行先印 row label ("a=衣/上身類") 再印 matrix 數值
             for (int i = 0; i < numClasses; i++) {
-                sb.append(String.format("%12s", classAttr.value(i)));
+                String rowLabel = String.format("%s=%s", shortLabels.get(i), classAttr.value(i));
+                sb.append(String.format("%-10s", rowLabel));  // 左對齊
                 for (int j = 0; j < numClasses; j++) {
                     sb.append(String.format("%5d", confusionMatrix[i][j]));
                 }

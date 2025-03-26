@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # coding: utf-8
 
+import os
 from flask import Flask, request, jsonify
 import io, sys, unicodedata
 from sentence_transformers import SentenceTransformer
@@ -30,4 +31,4 @@ def embed():
 
 if __name__ == '__main__':
     # 建議部署時採用 Gunicorn 或 Docker，此處僅用於測試
-    app.run(host='0.0.0.0', port=5001)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5003)))

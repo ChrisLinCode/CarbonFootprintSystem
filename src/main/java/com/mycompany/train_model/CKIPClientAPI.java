@@ -8,8 +8,19 @@ import com.google.gson.Gson;
 import java.util.*;
 
 public class CKIPClientAPI {
-    // 修改為您的 Flask API URL；若服務部署在同一台機器，則可以使用 localhost
-    private static final String API_URL = "http://localhost:5000/segment";
+    // API_URL 改為從環境變數讀取，沒有就預設用本機
+    private static final String API_URL;
+
+    static {
+        String envUrl = System.getenv("API_URL");
+        if (envUrl != null && !envUrl.isEmpty()) {
+            API_URL = envUrl;
+            System.out.println("使用環境變數 API_URL: " + API_URL);
+        } else {
+            API_URL = "http://localhost:5002/segment";
+            System.out.println("未設定 API_URL，使用預設: " + API_URL);
+        }
+    }
 
     /**
      * 單筆分詞：呼叫 API 取得分詞結果，回傳字串
