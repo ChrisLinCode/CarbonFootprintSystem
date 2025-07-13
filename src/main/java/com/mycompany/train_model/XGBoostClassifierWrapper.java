@@ -3,89 +3,126 @@ package com.mycompany.train_model;
 import weka.classifiers.AbstractClassifier;
 import weka.core.Instance;
 import weka.core.Instances;
+import weka.core.Option;
+import weka.core.OptionHandler;
+import weka.core.Utils;
 import ml.dmlc.xgboost4j.java.Booster;
 import ml.dmlc.xgboost4j.java.DMatrix;
 import ml.dmlc.xgboost4j.java.XGBoost;
-import ml.dmlc.xgboost4j.java.XGBoostError;
-
+import java.util.Enumeration;
+import java.util.Vector;
+import java.util.List;
+import java.util.ArrayList;
 import java.util.HashMap;
 
-public class XGBoostClassifierWrapper extends AbstractClassifier {
+/**
+ * XGBoost classifier wrapper for Weka.
+ * Supports setting number of boosting rounds via -num_round option.
+ */
+public class XGBoostClassifierWrapper extends AbstractClassifier implements OptionHandler {
+    private static final long serialVersionUID = 1L;
 
-    private Booster booster;
-    private int numClasses;
+    /** Number of boosting rounds (trees) */
+    protected int numRound = 100;
+    protected Booster booster;
 
     @Override
     public void buildClassifier(Instances data) throws Exception {
-        if (data.classIndex() == -1) {
-            throw new IllegalArgumentException("Class index is not set!");
-        }
-
-        this.numClasses = data.numClasses();
-
-        // 將 Instances 轉換為 XGBoost 的 DMatrix 格式
+        // Convert Instances to DMatrix
         DMatrix trainMatrix = convertInstancesToDMatrix(data);
 
-        // 不設置任何參數，讓 XGBoost 使用預設值
+        // Set parameters
         HashMap<String, Object> params = new HashMap<>();
-        params.put("objective", numClasses > 2 ? "multi:softprob" : "binary:logistic"); // 僅設置目標函數
-        params.put("num_class", numClasses); // 設置類別數（多類分類）
+        int numClasses = data.numClasses();
+        if (numClasses > 2) {
+            params.put("objective", "multi:softprob");
+            params.put("num_class", numClasses);
+        } else {
+            params.put("objective", "binary:logistic");
+        }
 
-        // 訓練模型
-        booster = XGBoost.train(trainMatrix, params, 100, new HashMap<>(), null, null);
+        // Train booster
+        booster = XGBoost.train(trainMatrix, params, numRound, new HashMap<>(), null, null);
     }
 
     @Override
     public double classifyInstance(Instance instance) throws Exception {
-        // 將單個 Instance 轉換為 XGBoost 格式
-        DMatrix testMatrix = convertInstanceToDMatrix(instance);
+        // Convert single instance to DMatrix
+        DMatrix dm = convertInstanceToDMatrix(instance);
+        float[][] predicts = booster.predict(dm);
 
-        // 獲得預測結果
-        float[][] predictions = booster.predict(testMatrix);
-
-        // 尋找預測概率最大的類別
-        return findMaxIndex(predictions[0]);
-    }
-
-    private DMatrix convertInstancesToDMatrix(Instances data) throws XGBoostError {
-        int numInstances = data.numInstances();
-        int numFeatures = data.numAttributes() - 1;
-
-        float[] featureValues = new float[numInstances * numFeatures];
-        float[] labels = new float[numInstances];
-
-        for (int i = 0; i < numInstances; i++) {
-            Instance instance = data.instance(i);
-            labels[i] = (float) instance.classValue();
-
-            for (int j = 0; j < numFeatures; j++) {
-                featureValues[i * numFeatures + j] = (float) instance.value(j);
+        if (predicts[0].length == 1) {
+            // Binary classification threshold 0.5
+            return predicts[0][0] > 0.5 ? 1.0 : 0.0;
+        } else {
+            // Multi-class: take argmax
+            int maxIndex = 0;
+            for (int i = 1; i < predicts[0].length; i++) {
+                if (predicts[0][i] > predicts[0][maxIndex]) {
+                    maxIndex = i;
+                }
             }
+            return (double) maxIndex;
         }
-        // 使用展平的數組構造 DMatrix
-        DMatrix dMatrix = new DMatrix(featureValues, numInstances, numFeatures, Float.NaN);
-        dMatrix.setLabel(labels);
-        return dMatrix;
     }
 
-    private DMatrix convertInstanceToDMatrix(Instance instance) throws XGBoostError {
-        int numFeatures = instance.numAttributes() - 1;
+    // ===== OptionHandler implementation =====
 
-        float[] featureValues = new float[numFeatures];
-        for (int i = 0; i < numFeatures; i++) {
-            featureValues[i] = (float) instance.value(i);
-        }
-
-        return new DMatrix(featureValues, 1, numFeatures, Float.NaN);
+    @Override
+    public Enumeration<Option> listOptions() {
+        Vector<Option> options = new Vector<>();
+        options.add(new Option(
+            "\tNumber of boosting rounds (trees). Default = 100.\n",
+            "num_round", 1, "-num_round <int>"));
+        return options.elements();
     }
 
-    private int findMaxIndex(float[] probabilities) {
-        int maxIndex = 0;
-        for (int i = 1; i < probabilities.length; i++) {
-            if (probabilities[i] > probabilities[maxIndex]) {
-                maxIndex = i;
+    @Override
+    public void setOptions(String[] options) throws Exception {
+        // Parse num_round option
+        String nr = Utils.getOption("num_round", options);
+        if (nr.length() > 0) {
+            numRound = Integer.parseInt(nr);
+        }
+        // Check for remaining unsupported options
+        Utils.checkForRemainingOptions(options);
+    }
+
+    @Override
+    public String[] getOptions() {
+        List<String> opts = new ArrayList<>();
+        opts.add("-num_round");
+        opts.add(Integer.toString(numRound));
+        return opts.toArray(new String[0]);
+    }
+
+    // ===== Helper methods to convert data =====
+
+    protected DMatrix convertInstancesToDMatrix(Instances data) throws Exception {
+        int nRows = data.numInstances();
+        int nCols = data.numAttributes() - 1;
+        float[] values = new float[nRows * nCols];
+        float[] labels = new float[nRows];
+        for (int i = 0; i < nRows; i++) {
+            Instance inst = data.instance(i);
+            for (int j = 0; j < nCols; j++) {
+                values[i * nCols + j] = (float) inst.value(j);
             }
+            labels[i] = (float) inst.classValue();
         }
-        return maxIndex;
+        //DMatrix matrix = new DMatrix(values, nRows, nCols);
+        DMatrix matrix = new DMatrix(values, nRows, nCols, Float.NaN);
+        matrix.setLabel(labels);
+        return matrix;
+    }
+
+    protected DMatrix convertInstanceToDMatrix(Instance inst) throws Exception {
+        int nCols = inst.numAttributes() - 1;
+        float[] values = new float[nCols];
+        for (int j = 0; j < nCols; j++) {
+            values[j] = (float) inst.value(j);
+        }
+        //return new DMatrix(values, 1, nCols);
+        return new DMatrix(values, 1, nCols, Float.NaN);
     }
 }

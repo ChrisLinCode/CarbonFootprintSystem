@@ -13,14 +13,27 @@ import weka.filters.supervised.instance.ClassBalancer;
 import weka.filters.supervised.instance.Resample;
 import weka.filters.Filter;
 import java.util.List;
+import weka.filters.unsupervised.attribute.Standardize;
+import java.io.File;
+import weka.core.converters.ConverterUtils.DataSource;
+import weka.core.converters.ArffSaver;
+import weka.classifiers.functions.supportVector.Kernel;
+import weka.classifiers.functions.supportVector.PolyKernel;
+import weka.classifiers.functions.supportVector.RBFKernel;
 
 // 演算法
 import weka.classifiers.trees.RandomForest;
 import weka.classifiers.functions.SMO;
 import weka.classifiers.lazy.IBk;
+//import weka.classifiers.functions.Logistic;
+import weka.classifiers.trees.J48;
+import weka.classifiers.meta.AdaBoostM1;
+
 import com.github.jfasttext.JFastText;
 import weka.classifiers.meta.FilteredClassifier;
 import weka.filters.MultiFilter;
+import weka.filters.supervised.instance.StratifiedRemoveFolds;
+import weka.core.OptionHandler;
 
 public class Train_model {
 
@@ -142,21 +155,249 @@ public class Train_model {
     }
 
     /**
-     * 根據演算法名稱選擇分類器
+     * 回傳已使用最佳參數 train 且輸出 10-fold CV 成績的 classifier
      */
-    public static Classifier selectClassifier(String algorithmName) {
+    public static Classifier selectClassifier(String algorithmName, Instances trainData) throws Exception {
+        Classifier cls;
+
         switch (algorithmName.toUpperCase()) {
-            case "RF":
-                return new RandomForest();
-            case "KNN":
-                return new IBk();
-            case "SVM":
-                return new SMO();
+            case "RF": {
+                // Random Forest: numTrees = 180
+                RandomForest rf = new RandomForest();
+                ((OptionHandler) rf).setOptions(new String[]{"-I", "180"});
+                cls = rf;
+                break;
+            }
+            case "SVM": {
+                // SMO: C = 100, kernel = RBF
+                SMO smo = new SMO();
+                smo.setC(100);
+                smo.setKernel(new RBFKernel());
+                cls = smo;
+                break;
+            }
+            case "KNN": {
+                // IBk: K = 1
+                cls = new IBk(1);
+                break;
+            }
             case "XGB":
-                return new XGBoostClassifierWrapper();
+            case "XGBOOST": {
+                // XGBoost: num_round = 190
+                XGBoostClassifierWrapper xgb = new XGBoostClassifierWrapper();
+                ((OptionHandler) xgb).setOptions(new String[]{"-num_round", "190"});
+                cls = xgb;
+                break;
+            }
+            case "ADA":
+            case "ADABOOST": {
+                // AdaBoostM1 + J48: iterations = 100
+                AdaBoostM1 ab = new AdaBoostM1();
+                ab.setClassifier(new J48());
+                ab.setNumIterations(100);
+                cls = ab;
+                break;
+            }
             default:
                 throw new IllegalArgumentException("Unsupported algorithm: " + algorithmName);
         }
+
+        // 10-fold cross-validation
+        Evaluation eval = new Evaluation(trainData);
+        eval.crossValidateModel(cls, trainData, 10, new Random(42));
+
+        // 輸出 CV 成績
+        System.out.println("\n=== CV Metrics for " + algorithmName + " ===");
+        System.out.printf("Accuracy: %.2f%%%n", eval.pctCorrect());
+        System.out.printf("Precision: %.4f%n", eval.weightedPrecision());
+        System.out.printf("Recall: %.4f%n", eval.weightedRecall());
+        System.out.printf("F-Measure: %.4f%n", eval.weightedFMeasure());
+        System.out.printf("ROC Area: %.4f%n", eval.weightedAreaUnderROC());
+        System.out.println(eval.toMatrixString("=== Confusion Matrix ==="));
+
+        return cls;
+    }
+
+    //最佳參數搜索
+    public static Classifier tuneWithCV(String classifierName, Instances trainData) throws Exception {
+        Classifier tuned;
+
+        if ("SVM".equalsIgnoreCase(classifierName)) {
+            // SVM: C ∈ {0.01,0.1,1,10,100}（log scale），kernel ∈ {Poly, RBF}
+            Kernel[] kernels = {new PolyKernel(), new RBFKernel()};
+            double[] cGrid = {0.01, 0.1, 1, 10, 100};
+            double bestAcc = Double.NEGATIVE_INFINITY;
+            double bestC = cGrid[0];
+            Kernel bestKernel = kernels[0];
+
+            int total = kernels.length * cGrid.length;
+            int count = 0;
+
+            for (Kernel k : kernels) {
+                for (double c : cGrid) {
+                    count++;
+                    System.out.printf("SVM tuning: %d/%d (C=%.4f, Kernel=%s)%n",
+                            count, total, c, k.getClass().getSimpleName());
+
+                    SMO svm = new SMO();
+                    svm.setC(c);
+                    svm.setKernel(k);
+
+                    Evaluation cv = new Evaluation(trainData);
+                    cv.crossValidateModel(svm, trainData, 10, new Random(42));
+
+                    double acc = cv.pctCorrect();
+                    System.out.printf("  → CV Acc = %.2f%%%n", acc);
+
+                    if (acc > bestAcc) {
+                        bestAcc = acc;
+                        bestC = c;
+                        bestKernel = k;
+                    }
+                }
+            }
+
+            System.out.printf("Best SVM → C=%.4f, Kernel=%s (CV Acc=%.2f%%)%n",
+                    bestC, bestKernel.getClass().getSimpleName(), bestAcc);
+
+            SMO finalSVM = new SMO();
+            finalSVM.setC(bestC);
+            finalSVM.setKernel(bestKernel);
+            //finalSVM.buildClassifier(trainData);
+            tuned = finalSVM;
+        } else if ("KNN".equalsIgnoreCase(classifierName)) {
+            // 手動搜尋 K ∈ {1…15}
+            int bestK = 1;
+            double bestAcc = Double.NEGATIVE_INFINITY;
+
+            for (int k = 1; k <= 15; k++) {
+                IBk knn = new IBk(k);
+                Evaluation cv = new Evaluation(trainData);
+                cv.crossValidateModel(knn, trainData, 10, new Random(42));
+                double acc = cv.pctCorrect();
+                System.out.printf("CV @ K=%2d → Acc = %.2f%%%n", k, acc);
+                if (acc > bestAcc) {
+                    bestAcc = acc;
+                    bestK = k;
+                }
+            }
+
+            System.out.printf("Best K = %d (CV Acc=%.2f%%)%n", bestK, bestAcc);
+            IBk finalKNN = new IBk(bestK);
+            //finalKNN.buildClassifier(trainData);
+            tuned = finalKNN;
+
+        } else if ("ADA".equalsIgnoreCase(classifierName) || "ADABOOST".equalsIgnoreCase(classifierName)) {
+            // AdaBoostM1 + J48 基底分類器，調整迭代次數 I ∈ {10,20,…,100}
+            int bestIters = 10;
+            double bestAcc = Double.NEGATIVE_INFINITY;
+            int total = (100 - 10) / 10 + 1;
+            for (int idx = 0; idx < total; idx++) {
+                int iters = 10 + idx * 10;
+                System.out.printf("AdaBoost tuning: %d/%d (I=%d)%n", idx + 1, total, iters);
+
+                AdaBoostM1 ab = new AdaBoostM1();
+                ab.setClassifier(new J48());
+                ab.setNumIterations(iters);
+                Evaluation cv = new Evaluation(trainData);
+                cv.crossValidateModel(ab, trainData, 10, new Random(42));
+
+                double acc = cv.pctCorrect();
+                System.out.printf("  → CV Acc = %.2f%%%n", acc);
+                if (acc > bestAcc) {
+                    bestAcc = acc;
+                    bestIters = iters;
+                }
+            }
+            System.out.printf("Best AdaBoost I = %d (CV Acc=%.2f%%)%n", bestIters, bestAcc);
+
+            AdaBoostM1 finalAB = new AdaBoostM1();
+            finalAB.setClassifier(new J48());
+            finalAB.setNumIterations(bestIters);
+            //finalAB.buildClassifier(trainData);
+            tuned = finalAB;
+
+        } else if ("RF".equalsIgnoreCase(classifierName)) {
+            // 手動搜尋 numTrees ∈ {50,60,…,200}
+            int bestTrees = 50;
+            double bestAcc = Double.NEGATIVE_INFINITY;
+            int totalSteps = (200 - 50) / 10 + 1;
+
+            for (int i = 0; i < totalSteps; i++) {
+                int t = 50 + i * 10;
+                System.out.printf("RF tuning: %d/%d (numTrees=%d)%n", i + 1, totalSteps, t);
+
+                RandomForest rf = new RandomForest();
+                // 用 OptionHandler 設定 -I 樹數
+                ((OptionHandler) rf).setOptions(new String[]{"-I", Integer.toString(t)});
+
+                Evaluation cv = new Evaluation(trainData);
+                cv.crossValidateModel(rf, trainData, 10, new Random(42));
+
+                double acc = cv.pctCorrect();
+                System.out.printf("  → CV Acc = %.2f%%%n", acc);
+
+                if (acc > bestAcc) {
+                    bestAcc = acc;
+                    bestTrees = t;
+                }
+            }
+
+            System.out.printf("Best numTrees = %d (CV Acc=%.2f%%)%n", bestTrees, bestAcc);
+
+            // 用最佳樹數訓練最終模型
+            RandomForest finalRF = new RandomForest();
+            ((OptionHandler) finalRF).setOptions(new String[]{"-I", Integer.toString(bestTrees)});
+            //finalRF.buildClassifier(trainData);
+            tuned = finalRF;
+        } else if ("XGB".equalsIgnoreCase(classifierName) || "XGBOOST".equalsIgnoreCase(classifierName)) {
+            // (XGB 部分維持之前的手動搜尋 num_round)
+            int bestRounds = 50;
+            double bestAcc = Double.NEGATIVE_INFINITY;
+            int total = (200 - 50) / 10 + 1;
+
+            for (int i = 0; i < total; i++) {
+                int r = 50 + i * 10;
+                System.out.printf("XGB tuning: %d/%d (num_round=%d)%n", i + 1, total, r);
+
+                XGBoostClassifierWrapper xgb = new XGBoostClassifierWrapper();
+                ((OptionHandler) xgb).setOptions(new String[]{"-num_round", Integer.toString(r)});
+
+                Evaluation cv = new Evaluation(trainData);
+                cv.crossValidateModel(xgb, trainData, 10, new Random(42));
+
+                double acc = cv.pctCorrect();
+                System.out.printf("  → CV Acc = %.2f%%%n", acc);
+
+                if (acc > bestAcc) {
+                    bestAcc = acc;
+                    bestRounds = r;
+                }
+            }
+
+            System.out.printf("Best num_round = %d (CV Acc=%.2f%%)%n", bestRounds, bestAcc);
+
+            XGBoostClassifierWrapper finalXGB = new XGBoostClassifierWrapper();
+            ((OptionHandler) finalXGB).setOptions(new String[]{"-num_round", Integer.toString(bestRounds)});
+            //finalXGB.buildClassifier(trainData);
+            tuned = finalXGB;
+        } else {
+            throw new IllegalArgumentException("Unsupported classifier: " + classifierName);
+        }
+
+        // 10-fold CV on the tuned model
+        Evaluation evalCV = new Evaluation(trainData);
+        evalCV.crossValidateModel(tuned, trainData, 10, new Random(42));
+        System.out.println("\n=== CV Metrics for " + classifierName + " ===");
+        System.out.printf("CV Accuracy: %.2f%%\n", evalCV.pctCorrect());
+        System.out.printf("CV Precision: %.4f\n", evalCV.weightedPrecision());
+        System.out.printf("CV Recall: %.4f\n", evalCV.weightedRecall());
+        System.out.printf("CV F-Measure: %.4f\n", evalCV.weightedFMeasure());
+        System.out.printf("CV ROC Area: %.4f\n", evalCV.weightedAreaUnderROC());
+
+        // retrain final model on entire trainData
+        //tuned.buildClassifier(trainData);
+        return tuned;
     }
 
     // ============ 主程式 ============
@@ -166,7 +407,7 @@ public class Train_model {
         String outputTxtPath = "src/main/resources/data_exploration_results.txt";
         String fastTextModelPath = "D:/NCU/weka/embedding/fasttext_model_300.bin";
 
-        long startTime = System.currentTimeMillis();
+        //long startTime = System.currentTimeMillis();
         try {
             // 載入資料
             CSVLoader loader = new CSVLoader();
@@ -174,7 +415,7 @@ public class Train_model {
             loader.setSource(new File(inputCsvPath));
             Instances data = loader.getDataSet();
             data.setClassIndex(data.numAttributes() - 1);
-            System.out.println("Data loaded. Time: " + (System.currentTimeMillis() - startTime) + " ms");
+            //System.out.println("Data loaded. Time: " + (System.currentTimeMillis() - startTime) + " ms");
 
             // 清空結果輸出檔案內容
             try (PrintWriter writer = new PrintWriter(new File(outputTxtPath))) {
@@ -188,52 +429,101 @@ public class Train_model {
             DataExploration.checkMissingValues(data, outputTxtPath);
 
             // 使用批量預處理一次處理所有文本
-            Instances processedData = preprocessDataBatch(data);
+            // 檢查 resources 下是否已有預處理結果檔案
+            File preprocessedFile = new File("src/main/resources/preprocessData.arff");
+            Instances processedData;
+            if (preprocessedFile.exists()) {
+                // 已有結果，直接讀取
+                processedData = DataSource.read(preprocessedFile.getAbsolutePath());
+                processedData.setClassIndex(processedData.numAttributes() - 1);
+            } else {
+                // 無結果，執行分詞並儲存
+                processedData = preprocessDataBatch(data);
+                ArffSaver saver = new ArffSaver();
+                saver.setInstances(processedData);
+                saver.setFile(preprocessedFile);
+                saver.writeBatch();
+            }
 
             // 載入 FastText 模型並向量化資料
             fastText = loadFastTextModel(fastTextModelPath);
             Instances vectorizedData = vectorizeData(processedData, fastText);
 
-            // 建立 MultiFilter
-            Resample resample = new Resample();
-            resample.setNoReplacement(false);
-            resample.setBiasToUniformClass(0.5);
-            resample.setSampleSizePercent(200);
+            // 1. 先打亂、再做 stratify（分層）
+            vectorizedData.randomize(new Random(42));
+            if (vectorizedData.classAttribute().isNominal()) {
+                vectorizedData.stratify(10);
+            }
 
+            // 2. 用第一支 filter 取出 trainData（90%）
+            StratifiedRemoveFolds trainFold = new StratifiedRemoveFolds();
+            trainFold.setNumFolds(10);
+            trainFold.setSeed(42);
+            trainFold.setFold(1);
+            trainFold.setInvertSelection(true);            // keep 90%
+            trainFold.setInputFormat(vectorizedData);       // **每支 filter 都要呼叫一次**
+            Instances trainData = Filter.useFilter(vectorizedData, trainFold);
+
+            // 3. 用第二支 filter 取出 testData（10%）
+            StratifiedRemoveFolds testFold = new StratifiedRemoveFolds();
+            testFold.setNumFolds(10);
+            testFold.setSeed(42);
+            testFold.setFold(1);
+            testFold.setInvertSelection(false);             // keep only fold #1 (10%)
+            testFold.setInputFormat(vectorizedData);       // **重新呼叫一次**
+            Instances testData = Filter.useFilter(vectorizedData, testFold);
+
+            // 4. 檢查大小
+            System.out.println("Train size: " + trainData.numInstances());
+            System.out.println("Test  size: " + testData.numInstances());
+
+            // 建立 MultiFilter
+            Standardize standardize = new Standardize();
             ClassBalancer classBalancer = new ClassBalancer();
 
             MultiFilter multiFilter = new MultiFilter();
-            Filter[] filters = new Filter[2];
-            filters[0] = resample;
-            filters[1] = classBalancer;
+            Filter[] filters = new Filter[]{
+                standardize, // Step 1: 標準化
+                classBalancer // Step 3: 類別平衡
+            };
             multiFilter.setFilters(filters);
 
-            // 選擇分類器 (此處以 RF 為例)
-            Classifier baseClassifier = selectClassifier("SVM");
+            
+            //選擇是否進行超參數搜索
+            int searchFlag = 0;
+            String model = "SVM";
+
+            Classifier bestModel;
+            if (searchFlag == 1) {
+                // 執行超參數搜尋
+                bestModel = tuneWithCV(model, trainData);
+            } else {
+                // 直接回傳已設定好最佳參數的模型
+                bestModel = selectClassifier(model, trainData);
+            }
 
             FilteredClassifier filteredClassifier = new FilteredClassifier();
             filteredClassifier.setFilter(multiFilter);
-            filteredClassifier.setClassifier(baseClassifier);
+            filteredClassifier.setClassifier(bestModel);
 
-            // 交叉驗證 (確保折數不大於資料數量)
-            int numFolds = 5;
-            Evaluation eval = new Evaluation(vectorizedData);
-            eval.crossValidateModel(filteredClassifier, vectorizedData, numFolds, new Random(42));
+            // 先用訓練資料 trainData 建立 FilteredClassifier
+            filteredClassifier.buildClassifier(trainData);
 
-            System.out.println("=== Summary ===");
-            System.out.println(eval.toSummaryString());
-            System.out.println("\n=== Evaluation Metrics ===");
-            System.out.println("Test Set Accuracy: " + eval.pctCorrect() + "%");
-            System.out.println("Precision: " + eval.weightedPrecision());
-            System.out.println("Recall: " + eval.weightedRecall());
-            System.out.println("F-Measure: " + eval.weightedFMeasure());
-            System.out.println("ROC Area: " + eval.weightedAreaUnderROC());
-            System.out.println(eval.toMatrixString("=== Confusion Matrix ==="));
+            // 建立 Evaluation 物件（參數用 trainData 以對類別分佈做參考）
+            Evaluation evalTest = new Evaluation(trainData);
 
-            // 用全部資料訓練模型
-            filteredClassifier.buildClassifier(vectorizedData);
-            eval.evaluateModel(filteredClassifier, vectorizedData);
-            System.out.println("Final Model Accuracy: " + eval.pctCorrect() + "%");
+            // 在 testData 上做評估
+            evalTest.evaluateModel(filteredClassifier, testData);
+
+            // 印出各項指標
+            System.out.println("\n=== Test Set Evaluation ===");
+            System.out.printf("Accuracy: %.2f%%\n", evalTest.pctCorrect());
+            System.out.printf("Precision: %.4f\n", evalTest.weightedPrecision());
+            System.out.printf("Recall: %.4f\n", evalTest.weightedRecall());
+            System.out.printf("F-Measure: %.4f\n", evalTest.weightedFMeasure());
+            System.out.printf("ROC Area: %.4f\n", evalTest.weightedAreaUnderROC());
+
+            System.out.println(evalTest.toMatrixString("=== Confusion Matrix ==="));
 
             ArrayList<String> classValues = new ArrayList<>();
             for (int i = 0; i < data.numClasses(); i++) {

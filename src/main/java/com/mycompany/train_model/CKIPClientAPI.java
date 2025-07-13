@@ -8,12 +8,17 @@ import com.google.gson.Gson;
 import java.util.*;
 
 public class CKIPClientAPI {
+
     // API_URL 改為從環境變數讀取，沒有就預設用本機
     private static final String API_URL;
 
     static {
         String envUrl = System.getenv("API_URL");
-        if (envUrl != null && !envUrl.isEmpty()) {
+        String sysProp = System.getProperty("API_URL");
+        if (sysProp != null && !sysProp.isEmpty()) {
+            API_URL = sysProp;
+            System.out.println("使用 Java 系統參數 API_URL: " + API_URL);
+        } else if (envUrl != null && !envUrl.isEmpty()) {
             API_URL = envUrl;
             System.out.println("使用環境變數 API_URL: " + API_URL);
         } else {
