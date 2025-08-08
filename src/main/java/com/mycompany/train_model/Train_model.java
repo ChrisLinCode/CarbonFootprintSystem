@@ -603,7 +603,15 @@ public class Train_model {
             attributes.add(new Attribute("class", new ArrayList<>(classValues)));
             Instances instance = new Instances("PredictionInstance", attributes, 1);
             instance.setClassIndex(vector.length);
-            instance.add(new DenseInstance(1.0, vector));
+
+            // Weka instances must provide a value for every attribute, including the class
+            // attribute. Previously only the feature vector was supplied, which resulted in
+            // an array that was one element too short and triggered an exception during
+            // prediction. Here we append a missing value placeholder for the class label so
+            // the instance length matches the schema expected by Weka.
+            double[] values = Arrays.copyOf(vector, vector.length + 1);
+            values[vector.length] = Utils.missingValue();
+            instance.add(new DenseInstance(1.0, values));
             return instance;
         }
 
